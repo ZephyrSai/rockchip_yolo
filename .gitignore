@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pt
+*.onnx
+*_rknn_model/
+*_ncnn_model/
+*_saved_model/
+*.tar.gz
+rknn_benchmark_build/
