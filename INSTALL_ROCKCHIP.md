@@ -68,16 +68,23 @@ itself: a model converted with `rknn-toolkit2` 2.3.x and run against an older
 output.
 
 ```bash
-# what the board's runtime is
+# the board's runtime library
 strings /usr/lib/librknnrt.so | grep -i "librknnrt version" | head -1
-# what converted the model
-python3 -c "import rknn; print(rknn.__version__)"        # on the host
+# the board's NPU driver
+sudo cat /sys/kernel/debug/rknpu/version
+# the RKNN server, if you use it
+strings /usr/bin/rknn_server | grep -i build
+# what converted the model, on the x86 host
+python3 -c "import rknn; print(rknn.__version__)"
 ```
 
-They must agree on the major/minor version. If they do not, replace the board's
-`librknnrt.so` with the one shipped in the matching `rknn-toolkit2` release
-(`runtime/Linux/librknn_api/aarch64/librknnrt.so`) rather than downgrading the
-toolkit.
+They must agree. Rockchip's own guidance when they do not is to **replace the
+board's runtime**, not to downgrade the toolkit — copy from the matching
+`rknn-toolkit2` checkout:
+
+```bash
+sudo cp rknn-toolkit2/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so /usr/lib/
+```
 
 The driver is a third version to keep in mind: `rknpu` 0.9.6 vs 0.9.8 differ in
 what runtime versions they accept. The suite prints all three in STEP 0.
@@ -216,3 +223,21 @@ failures.
 - `export_rknn_host.sh` — x86 host-side conversion
 - `rknn_raw_bench.py`, `tflite_bench.py`, `bench_harness.py` — per-stage harnesses
 - `android/` — the same board driven over `adb`
+
+---
+
+## 11. Provenance of the version claims
+
+The install steps here come from Rockchip and board-vendor documentation,
+checked on **23 Sep 2026**, and have **not** been run on an RK3588/RK3576 board.
+
+| Claim | Source |
+|---|---|
+| `librknnrt.so` must match the toolkit; fix by replacing the runtime from `rknpu2/runtime/Linux/librknn_api/aarch64/`; version checks via `strings` and `/sys/kernel/debug/rknpu/version` | Radxa RKNN Toolkit2 docs; FriendlyELEC NPU wiki; rockchip-linux/rknn-toolkit2 issue tracker |
+| `rknn-toolkit-lite2` 2.3.2 | [PyPI](https://pypi.org/project/rknn-toolkit-lite2/) |
+| RKNN export is x86-64 Linux only | [Ultralytics Rockchip RKNN docs](https://docs.ultralytics.com/integrations/rockchip-rknn) |
+| RK3588 NPU is 3 cores and defaults to one unless `core_mask` is set | Rockchip RKNPU2 API documentation |
+| Mainline `rocket` driver is convolution-only via Mesa Teflon | Mesa release notes, as already stated in this repo's README |
+| The ONNX Runtime shadowing behaviour and Ultralytics AutoUpdate (§4) | reproduced and fixed on AMD hardware in [ryzen_yolo](https://github.com/ZephyrSai/ryzen_yolo) |
+
+§6 prints what your board actually has. Where it disagrees, believe the board.
