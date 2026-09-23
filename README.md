@@ -51,6 +51,53 @@ scp ~/yolo-rockchip-export/rknn_models_rk3588.tar.gz board:
 3. Rockchip's `rknn_benchmark` (Android build via `tools/build_rknn_benchmark.sh android`, needs an NDK) on every RKNN model with single-core and all-core masks, using the device's own runtime.
 4. Summary table + CSV.
 
+## Before you trust any number: [`INSTALL_ROCKCHIP.md`](INSTALL_ROCKCHIP.md)
+
+That document records the stack this suite needs on Rockchip RK3588 / RK3576 (RKNPU + Mali), how to build it,
+and the traps that make a benchmark report an accelerator while quietly running
+on the CPU. Read it first when setting up a new machine, or when a result looks
+too good, or too even.
+
+Two of those traps are worth knowing before you run anything:
+
+- **Accelerated ONNX Runtime builds all unpack into the same `onnxruntime/`
+  directory.** Install two and one silently shadows the other, with no error.
+  Ultralytics' exporter can cause this on its own: it checks for a distribution
+  literally named `onnxruntime`, and AutoUpdate installs the plain CPU wheel over
+  your accelerated build in the middle of an export. On the AMD sibling of this
+  suite that mechanism produced "GPU" results that were entirely CPU. The suite
+  now sets `YOLO_AUTOINSTALL=False`, enforces a single distribution, and reports
+  the provider that *actually ran* rather than the one requested.
+- **A reported device is a claim, not proof.** `lib/accel_verify.py` reads the
+  kernel's own per-process accounting and says whether an accelerator engine was
+  measurably busy:
+
+  ```bash
+  python3 lib/accel_verify.py --list                    # counters on this box
+  python3 lib/accel_verify.py --pid <pid> --seconds 5   # watch a running job
+  ```
+
+  Exit status 1 means nothing moved - treat any accelerator claim as unproven.
+
+## Fair comparison
+
+`lib/fair_compare.py` compares every backend the machine actually has, using the
+methodology in `lib/fairness.py`: interleaved rounds, isolation, medians of
+medians, and a loud flag when the spread exceeds 15%.
+
+```bash
+python3 lib/fair_compare.py --model yolo11n --workdir <workdir>
+python3 lib/fair_compare.py --model yolo11n --mode interleaved
+```
+
+This exists because the obvious approach gives wrong answers on this class of
+hardware. Measured while building the AMD sibling suite: the same workload timed
+16.7 ms early in a session and 24.4 ms later (thermal drift); interleaving CPU
+and GPU work made the CPU 45% slower (shared package power); and a single-shot
+mean produced a confident 1.8x where the true figure was 1.1-1.3x. `--mode
+isolated` answers "which backend should I use"; `--mode interleaved` answers
+"what happens when they run together".
+
 ## Requirements
 
 **Board (Linux):** an aarch64 Debian/Ubuntu-style image with Python 3.10–3.12 and `python3-venv`. For the NPU: a vendor BSP kernel with `rknpu` and `librknnrt.so` installed (Radxa: `sudo apt install rknpu2-rk3588` or `rknpu2-rk356x`; other distros: copy `rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so` from [airockchip/rknn-toolkit2](https://github.com/airockchip/rknn-toolkit2) to `/usr/lib`). For `rknn_benchmark`: `build-essential zlib1g-dev`. For GPU tests: see [GPU setup](#mali-gpu-setup).

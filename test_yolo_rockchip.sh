@@ -73,6 +73,14 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# Ultralytics "AutoUpdate" pip-installs anything its requirement check cannot
+# find. Accelerated ONNX Runtime builds ship under other distribution names
+# (onnxruntime-openvino, onnxruntime-qnn, onnxruntime-rocm), so that check fails
+# and AutoUpdate installs the plain CPU wheel straight over them - they all
+# unpack into the same onnxruntime/ directory and the last one installed wins.
+# Every later "accelerator" result is then a CPU result wearing the wrong label.
+export YOLO_AUTOINSTALL=False
+
 mkdir -p "$WORKDIR" "$LOGDIR"
 : > "$RESULTS_FILE"
 echo "backend,model,stage,metric,value_ms_or_fps" > "$BENCH_CSV"
@@ -83,6 +91,32 @@ pass() { echo -e "${GREEN}[PASS]${NC} $1"; echo "[PASS] $1" >> "$RESULTS_FILE"; 
 fail() { echo -e "${RED}[FAIL]${NC} $1"; echo "[FAIL] $1" >> "$RESULTS_FILE"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; echo "[WARN] $1" >> "$RESULTS_FILE"; }
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+
+# --- ONNX Runtime integrity -------------------------------------------------
+# Exactly one onnxruntime distribution may be installed: the CPU, and every
+# accelerated build, unpack into the same onnxruntime/ directory, so a second
+# one silently shadows the first. Call this after installs and again after any
+# Ultralytics export, which is where an unwanted one tends to appear.
+assert_ort_runtime() {
+  local stage="${1:-check}"
+  local dists
+  dists=$(pip list --format=freeze 2>/dev/null | grep -ciE '^onnxruntime(-[a-z]+)?==' || true)
+  if [ "${dists:-0}" -gt 1 ]; then
+    warn "ONNX Runtime integrity ($stage): $dists onnxruntime distributions installed at once - $(pip list --format=freeze 2>/dev/null | grep -iE '^onnxruntime(-[a-z]+)?==' | tr '\n' ' '). They share one directory, so one is shadowing the other. Keeping onnxruntime."
+    pip uninstall -y -q $(pip list --format=freeze 2>/dev/null | grep -ioE '^onnxruntime(-[a-z]+)?' | grep -iv "^onnxruntime$") >/dev/null 2>&1 || true
+    pip install -q --force-reinstall --no-deps onnxruntime >/dev/null 2>&1 || true
+  fi
+  if [ -n "" ]; then
+    local eps
+    eps=$(python3 -c "import onnxruntime as ort; print(','.join(ort.get_available_providers()))" 2>/dev/null || echo "")
+    case "$eps" in
+      **) pass "ONNX Runtime integrity ($stage):  present" ;;
+      "") warn "ONNX Runtime integrity ($stage): onnxruntime not importable" ;;
+      *)  warn "ONNX Runtime integrity ($stage):  is gone (have: $eps). Something replaced the accelerated build - any 'accelerator' ONNX result from here on would really be CPU." ;;
+    esac
+  fi
+}
+
 sudo_cat() { cat "$1" 2>/dev/null || sudo -n cat "$1" 2>/dev/null; }
 
 # ==================================================================
@@ -247,12 +281,12 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
   source "$VENV_DIR/bin/activate"
   pip install -q --upgrade pip
   info "Installing ultralytics (pulls torch aarch64 CPU wheels; needs Python >= 3.10 and glibc >= 2.28)..."
-  pip install -q ultralytics 2>"$LOGDIR/pip_ultralytics.log" && pass "ultralytics installed" || fail "ultralytics install failed — see $LOGDIR/pip_ultralytics.log"
+  pip install -q ultralytics "onnx>=1.12,<2" onnxslim ncnn 2>"$LOGDIR/pip_ultralytics.log" && pass "ultralytics installed" || fail "ultralytics install failed — see $LOGDIR/pip_ultralytics.log"
   info "Installing rknn-toolkit-lite2 (NPU runtime, Python)..."
   pip install -q rknn-toolkit-lite2 2>"$LOGDIR/pip_rknnlite.log" && pass "rknn-toolkit-lite2 installed" || warn "rknn-toolkit-lite2 install failed (Python > 3.12?) — see $LOGDIR/pip_rknnlite.log"
   info "Installing ncnn, onnxruntime, TFLite runtime..."
   pip install -q ncnn 2>"$LOGDIR/pip_ncnn.log" && pass "ncnn installed" || warn "ncnn install failed"
-  pip install -q onnxruntime 2>"$LOGDIR/pip_ort.log" && pass "onnxruntime installed" || warn "onnxruntime install failed"
+  pip install -q onnxruntime 2>"$LOGDIR/pip_ort.log"; assert_ort_runtime "after install" && pass "onnxruntime installed" || warn "onnxruntime install failed"
   pip install -q ai-edge-litert 2>"$LOGDIR/pip_tflite.log" || pip install -q tflite-runtime 2>>"$LOGDIR/pip_tflite.log" && pass "TFLite runtime installed" || warn "No TFLite runtime wheel for this Python — TFLite rows will be skipped"
 else
   # shellcheck disable=SC1091
